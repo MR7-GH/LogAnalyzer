@@ -13,3 +13,15 @@ elasticsearch:
         service_field: "host"
         status_field: "status"
         time_field: "@timestamp"
+
+analyze:
+  stats_index: "arvan-cdn"
+
+  default_window: "5m"
+
+  default_condition:
+    gte: 499
+    lt: 600
+
+  excluded_status_codes:
+    - 583

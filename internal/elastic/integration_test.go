@@ -116,6 +116,7 @@ func TestIntegrationConfiguredIndexes(t *testing.T) {
 
 			t.Logf("index=%s total=%d returned=%d took=%dms", index, result.Total, len(result.Documents), result.Took)
 		})
+
 	}
 }
 
