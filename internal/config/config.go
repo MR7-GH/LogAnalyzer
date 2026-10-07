@@ -15,18 +15,31 @@ type Config struct {
 	Analyze       AnalyzeConfig       `yaml:"analyze"`
 }
 
-// AnalyzeConfig contains analysis defaults and policies.
+// AnalyzeConfig contains analysis defaults, policies, runtime services, and correlation settings.
 type AnalyzeConfig struct {
-	StatsIndex          string          `yaml:"stats_index"`
-	DefaultWindow       string          `yaml:"default_window"`
-	DefaultCondition    StatusCondition `yaml:"default_condition"`
-	ExcludedStatusCodes []int           `yaml:"excluded_status_codes"`
+	StatsIndex          string            `yaml:"stats_index"`
+	DefaultWindow       string            `yaml:"default_window"`
+	DefaultCondition    StatusCondition   `yaml:"default_condition"`
+	ExcludedStatusCodes []int             `yaml:"excluded_status_codes"`
+	Correlation         CorrelationConfig `yaml:"correlation"`
+	Services            []string          `yaml:"-"`
 }
 
 // StatusCondition defines the default HTTP status range.
 type StatusCondition struct {
 	GTE int `yaml:"gte"`
 	LT  int `yaml:"lt"`
+}
+
+// CorrelationConfig defines how documents from two indexes are matched.
+type CorrelationConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	PrimaryIndex   string `yaml:"primary_index"`
+	SecondaryIndex string `yaml:"secondary_index"`
+	PrimaryField   string `yaml:"primary_field"`
+	SecondaryField string `yaml:"secondary_field"`
+	MaxDocuments   int    `yaml:"max_documents"`
+	BatchSize      int    `yaml:"batch_size"`
 }
 
 // ElasticsearchConfig contains Elasticsearch index definitions.
@@ -48,7 +61,7 @@ type IndexSchema struct {
 	TimeField    string `yaml:"time_field"`
 }
 
-// Load reads and validates configuration from a YAML file.
+// Load reads YAML configuration, applies environment configuration, and validates the result.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -58,6 +71,16 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("config: decode %q: %w", path, err)
+	}
+
+	cfg.Analyze.Services = parseServices(os.Getenv("STATS_SERVICES"))
+
+	if cfg.Analyze.Correlation.MaxDocuments == 0 {
+		cfg.Analyze.Correlation.MaxDocuments = 10000
+	}
+
+	if cfg.Analyze.Correlation.BatchSize == 0 {
+		cfg.Analyze.Correlation.BatchSize = 1000
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -97,6 +120,43 @@ func (c Config) Validate() error {
 
 	if _, err := c.Analyze.Window(); err != nil {
 		return err
+	}
+
+	if c.Analyze.Correlation.Enabled {
+		if err := c.validateCorrelation(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateCorrelation verifies correlation configuration.
+func (c Config) validateCorrelation() error {
+	cfg := c.Analyze.Correlation
+
+	if _, ok := c.FindIndex(cfg.PrimaryIndex); !ok {
+		return fmt.Errorf("config: correlation primary_index %q is not configured", cfg.PrimaryIndex)
+	}
+
+	if _, ok := c.FindIndex(cfg.SecondaryIndex); !ok {
+		return fmt.Errorf("config: correlation secondary_index %q is not configured", cfg.SecondaryIndex)
+	}
+
+	if strings.TrimSpace(cfg.PrimaryField) == "" {
+		return fmt.Errorf("config: correlation.primary_field is required")
+	}
+
+	if strings.TrimSpace(cfg.SecondaryField) == "" {
+		return fmt.Errorf("config: correlation.secondary_field is required")
+	}
+
+	if cfg.MaxDocuments <= 0 {
+		return fmt.Errorf("config: correlation.max_documents must be greater than zero")
+	}
+
+	if cfg.BatchSize <= 0 {
+		return fmt.Errorf("config: correlation.batch_size must be greater than zero")
 	}
 
 	return nil
@@ -150,4 +210,27 @@ func (c AnalyzeConfig) Window() (time.Duration, error) {
 	}
 
 	return window, nil
+}
+
+// parseServices parses, trims, and deduplicates a comma-separated service list.
+func parseServices(value string) []string {
+	parts := strings.Split(value, ",")
+	services := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+
+	for _, part := range parts {
+		service := strings.TrimSpace(part)
+		if service == "" {
+			continue
+		}
+
+		if _, exists := seen[service]; exists {
+			continue
+		}
+
+		seen[service] = struct{}{}
+		services = append(services, service)
+	}
+
+	return services
 }

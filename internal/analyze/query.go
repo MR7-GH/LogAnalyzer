@@ -20,15 +20,91 @@ type TimeRange struct {
 	To   time.Time
 }
 
-// StatusRequest contains all dynamic inputs required to build a status query.
+// StatusRequest contains all dynamic inputs required to build an analysis query.
 type StatusRequest struct {
 	Service   string
 	Condition StatusCondition
 	TimeRange TimeRange
 }
 
-// BuildStatusQuery builds an Elasticsearch query from service, condition, timeline, and exclusions.
+// BuildStatusQuery builds an Elasticsearch status aggregation query.
 func BuildStatusQuery(index config.IndexConfig, req StatusRequest, excludedStatusCodes []int) ([]byte, error) {
+	filters, err := buildFilters(index, req)
+	if err != nil {
+		return nil, err
+	}
+
+	boolQuery := map[string]any{"filter": filters}
+	addExcludedStatusCodes(boolQuery, index.Schema.StatusField, excludedStatusCodes)
+
+	query := map[string]any{
+		"size": 0,
+		"query": map[string]any{
+			"bool": boolQuery,
+		},
+		"aggs": map[string]any{
+			"status_codes": map[string]any{
+				"terms": map[string]any{
+					"field": index.Schema.StatusField,
+					"size":  200,
+				},
+			},
+		},
+	}
+
+	return marshalQuery(query)
+}
+
+// BuildCorrelationPrimaryQuery builds the query used to collect correlation IDs and status codes from the primary index.
+func BuildCorrelationPrimaryQuery(index config.IndexConfig, req StatusRequest, correlationField string, excludedStatusCodes []int, size int) ([]byte, error) {
+	filters, err := buildFilters(index, req)
+	if err != nil {
+		return nil, err
+	}
+
+	boolQuery := map[string]any{"filter": filters}
+	addExcludedStatusCodes(boolQuery, index.Schema.StatusField, excludedStatusCodes)
+
+	query := map[string]any{
+		"size":             size,
+		"track_total_hits": true,
+		"_source": []string{
+			correlationField,
+			index.Schema.StatusField,
+		},
+		"query": map[string]any{
+			"bool": boolQuery,
+		},
+	}
+
+	return marshalQuery(query)
+}
+
+// BuildCorrelationSecondaryQuery builds a batched lookup query for correlation IDs.
+func BuildCorrelationSecondaryQuery(field string, ids []string) ([]byte, error) {
+	if field == "" {
+		return nil, fmt.Errorf("analyze: secondary correlation field is required")
+	}
+
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("analyze: correlation IDs are required")
+	}
+
+	query := map[string]any{
+		"size":    len(ids),
+		"_source": []string{field},
+		"query": map[string]any{
+			"terms": map[string]any{
+				field: ids,
+			},
+		},
+	}
+
+	return marshalQuery(query)
+}
+
+// buildFilters builds the service, condition, and timeline filters shared by analysis queries.
+func buildFilters(index config.IndexConfig, req StatusRequest) ([]any, error) {
 	if req.Service == "" {
 		return nil, fmt.Errorf("analyze: service is required")
 	}
@@ -75,35 +151,26 @@ func BuildStatusQuery(index config.IndexConfig, req StatusRequest, excludedStatu
 		})
 	}
 
-	boolQuery := map[string]any{
-		"filter": filters,
+	return filters, nil
+}
+
+// addExcludedStatusCodes adds status-code exclusions to an Elasticsearch bool query.
+func addExcludedStatusCodes(boolQuery map[string]any, field string, excluded []int) {
+	if len(excluded) == 0 {
+		return
 	}
 
-	if len(excludedStatusCodes) > 0 {
-		boolQuery["must_not"] = []any{
-			map[string]any{
-				"terms": map[string]any{
-					index.Schema.StatusField: excludedStatusCodes,
-				},
-			},
-		}
-	}
-
-	query := map[string]any{
-		"size": 0,
-		"query": map[string]any{
-			"bool": boolQuery,
-		},
-		"aggs": map[string]any{
-			"status_codes": map[string]any{
-				"terms": map[string]any{
-					"field": index.Schema.StatusField,
-					"size":  200,
-				},
+	boolQuery["must_not"] = []any{
+		map[string]any{
+			"terms": map[string]any{
+				field: excluded,
 			},
 		},
 	}
+}
 
+// marshalQuery serializes an Elasticsearch query.
+func marshalQuery(query map[string]any) ([]byte, error) {
 	body, err := json.Marshal(query)
 	if err != nil {
 		return nil, fmt.Errorf("analyze: marshal query: %w", err)
