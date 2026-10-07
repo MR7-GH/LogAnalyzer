@@ -23,9 +23,10 @@ type StatsOptions struct {
 	Detailed bool
 }
 
-// StatsResponse contains ordered statistics for analyzed services.
+// StatsResponse contains the caller name and statistics for configured services.
 type StatsResponse struct {
-	Services []StatusResult `json:"services"`
+	RequestedBy string         `json:"requested_by"`
+	Services    []StatusResult `json:"services"`
 }
 
 // StatusResult contains HTTP status statistics and correlation information for one service.
@@ -81,9 +82,9 @@ func NewService(client *elastic.Client, cfg *config.Config, indexName string) (*
 	}, nil
 }
 
-// Stats returns the requested service first and configured services that contain errors.
-func (s *Service) Stats(ctx context.Context, requestedService string, options StatsOptions) (StatsResponse, error) {
-	services := mergeServices(requestedService, s.config.Analyze.Services)
+// Stats analyzes only configured services and keeps requestedBy as report metadata.
+func (s *Service) Stats(ctx context.Context, requestedBy string, options StatsOptions) (StatsResponse, error) {
+	requestedBy = strings.TrimSpace(requestedBy)
 
 	window, err := s.config.Analyze.Window()
 	if err != nil {
@@ -93,9 +94,9 @@ func (s *Service) Stats(ctx context.Context, requestedService string, options St
 	to := time.Now().UTC()
 	from := to.Add(-window)
 
-	results := make([]StatusResult, 0, len(services))
+	results := make([]StatusResult, 0, len(s.config.Analyze.Services))
 
-	for i, service := range services {
+	for _, service := range s.config.Analyze.Services {
 		req := StatusRequest{
 			Service: service,
 			Condition: StatusCondition{
@@ -113,11 +114,11 @@ func (s *Service) Stats(ctx context.Context, requestedService string, options St
 			return StatsResponse{}, fmt.Errorf("analyze service %q: %w", service, err)
 		}
 
-		if i != 0 && result.Total == 0 {
+		if result.Total == 0 {
 			continue
 		}
 
-		if result.Total > 0 && s.config.Analyze.Correlation.Enabled {
+		if s.config.Analyze.Correlation.Enabled {
 			correlation, err := s.Correlate(ctx, req)
 			if err != nil {
 				return StatsResponse{}, fmt.Errorf("correlate service %q: %w", service, err)
@@ -157,7 +158,8 @@ func (s *Service) Stats(ctx context.Context, requestedService string, options St
 	}
 
 	return StatsResponse{
-		Services: results,
+		RequestedBy: requestedBy,
+		Services:    results,
 	}, nil
 }
 
@@ -208,33 +210,4 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 	}
 
 	return result, nil
-}
-
-// mergeServices places the requested service first and appends configured services without duplicates.
-func mergeServices(requested string, configured []string) []string {
-	requested = strings.TrimSpace(requested)
-
-	services := make([]string, 0, len(configured)+1)
-	seen := make(map[string]struct{}, len(configured)+1)
-
-	if requested != "" {
-		services = append(services, requested)
-		seen[requested] = struct{}{}
-	}
-
-	for _, service := range configured {
-		service = strings.TrimSpace(service)
-		if service == "" {
-			continue
-		}
-
-		if _, exists := seen[service]; exists {
-			continue
-		}
-
-		seen[service] = struct{}{}
-		services = append(services, service)
-	}
-
-	return services
 }

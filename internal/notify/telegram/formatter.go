@@ -12,6 +12,15 @@ import (
 func FormatStats(result analyze.StatsResponse, detailed bool) string {
 	var builder strings.Builder
 
+	if result.RequestedBy != "" {
+		fmt.Fprintf(&builder, "Requested By: %s\n\n", result.RequestedBy)
+	}
+
+	if len(result.Services) == 0 {
+		builder.WriteString("No configured services currently have errors.")
+		return builder.String()
+	}
+
 	for i, service := range result.Services {
 		if i > 0 {
 			builder.WriteString("\n\n")
@@ -32,16 +41,9 @@ func writeService(builder *strings.Builder, service analyze.StatusResult, detail
 
 	for _, status := range statusCodes {
 		total := service.Codes[status]
-
 		correlation := service.Correlation.ByStatus[status]
 
-		fmt.Fprintf(
-			builder,
-			"%d: %d    nginx_recieved: %d\n",
-			status,
-			total,
-			correlation.Matched,
-		)
+		fmt.Fprintf(builder, "%d: %d    nginx_recieved: %d\n", status, total, correlation.Matched)
 
 		if detailed {
 			writeUnmatchedRequestIDs(builder, service, status)

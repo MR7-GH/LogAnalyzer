@@ -13,7 +13,7 @@ import (
 
 // Analyzer defines the analysis behavior required by the report service.
 type Analyzer interface {
-	Stats(ctx context.Context, service string, options analyze.StatsOptions) (analyze.StatsResponse, error)
+	Stats(ctx context.Context, requestedBy string, options analyze.StatsOptions) (analyze.StatsResponse, error)
 }
 
 // TelegramSender defines the Telegram behavior required by the report service.
@@ -50,18 +50,19 @@ func NewService(analyzer Analyzer, telegramSender TelegramSender, timeout time.D
 }
 
 // Submit accepts a report request and starts processing it asynchronously.
-func (s *Service) Submit(service string, options analyze.StatsOptions) error {
-	service = strings.TrimSpace(service)
-	if service == "" {
-		return fmt.Errorf("report: service is required")
+func (s *Service) Submit(requestedBy string, options analyze.StatsOptions) error {
+	requestedBy = strings.TrimSpace(requestedBy)
+
+	if requestedBy == "" {
+		return fmt.Errorf("report: requestedBy is required")
 	}
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 		defer cancel()
 
-		if _, err := s.Process(ctx, service, options); err != nil {
-			log.Printf("report: asynchronous processing for service %q failed: %v", service, err)
+		if _, err := s.Process(ctx, requestedBy, options); err != nil {
+			log.Printf("report: asynchronous processing requested by %q failed: %v", requestedBy, err)
 		}
 	}()
 
@@ -69,24 +70,25 @@ func (s *Service) Submit(service string, options analyze.StatsOptions) error {
 }
 
 // Process executes analysis synchronously, sends Telegram output, and returns the result.
-func (s *Service) Process(ctx context.Context, service string, options analyze.StatsOptions) (analyze.StatsResponse, error) {
-	service = strings.TrimSpace(service)
-	if service == "" {
-		return analyze.StatsResponse{}, fmt.Errorf("report: service is required")
+func (s *Service) Process(ctx context.Context, requestedBy string, options analyze.StatsOptions) (analyze.StatsResponse, error) {
+	requestedBy = strings.TrimSpace(requestedBy)
+
+	if requestedBy == "" {
+		return analyze.StatsResponse{}, fmt.Errorf("report: requestedBy is required")
 	}
 
-	result, err := s.analyzer.Stats(ctx, service, options)
+	result, err := s.analyzer.Stats(ctx, requestedBy, options)
 	if err != nil {
-		return analyze.StatsResponse{}, fmt.Errorf("report: analyze service %q: %w", service, err)
+		return analyze.StatsResponse{}, fmt.Errorf("report: analyze request from %q: %w", requestedBy, err)
 	}
 
 	message := telegram.FormatStats(result, options.Detailed)
 
 	if err := s.telegram.Send(ctx, message); err != nil {
-		return analyze.StatsResponse{}, fmt.Errorf("report: Telegram delivery for service %q: %w", service, err)
+		return analyze.StatsResponse{}, fmt.Errorf("report: Telegram delivery for request from %q: %w", requestedBy, err)
 	}
 
-	log.Printf("report: service %q successfully analyzed and sent to Telegram", service)
+	log.Printf("report: request from %q successfully analyzed and sent to Telegram", requestedBy)
 
 	return result, nil
 }
