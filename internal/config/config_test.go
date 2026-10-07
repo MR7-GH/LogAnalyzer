@@ -182,3 +182,43 @@ func writeTestConfig(t *testing.T, content string) string {
 
 	return path
 }
+
+// TestLoadServicesFromEnvironment verifies STATS_SERVICES parsing and deduplication.
+func TestLoadServicesFromEnvironment(t *testing.T) {
+	t.Setenv("STATS_SERVICES", "api.example.com, panel.example.com,api.example.com,,cdn.example.com")
+
+	path := writeTestConfig(t, `
+elasticsearch:
+  indexes:
+    - name: arvan-cdn
+      pattern: "arvan-cdn*"
+      schema:
+        service_field: "domain"
+        status_field: "status"
+        time_field: "timestamp"
+
+analyze:
+  stats_index: "arvan-cdn"
+  default_window: "5m"
+  default_condition:
+    gte: 400
+    lt: 600
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	want := []string{"api.example.com", "panel.example.com", "cdn.example.com"}
+
+	if len(cfg.Analyze.Services) != len(want) {
+		t.Fatalf("expected %d services, got %d", len(want), len(cfg.Analyze.Services))
+	}
+
+	for i := range want {
+		if cfg.Analyze.Services[i] != want[i] {
+			t.Fatalf("expected service %q at index %d, got %q", want[i], i, cfg.Analyze.Services[i])
+		}
+	}
+}

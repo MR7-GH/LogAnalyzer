@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"LogAnalyzer/internal/config"
@@ -15,6 +16,11 @@ type Service struct {
 	client    *elastic.Client
 	config    *config.Config
 	indexName string
+}
+
+// StatsResponse contains ordered statistics for the requested service and configured services with errors.
+type StatsResponse struct {
+	Services []StatusResult `json:"services"`
 }
 
 // StatusResult contains HTTP status statistics for one service and time window.
@@ -64,28 +70,44 @@ func NewService(client *elastic.Client, cfg *config.Config, indexName string) (*
 	return &Service{client: client, config: cfg, indexName: indexName}, nil
 }
 
-// Stats executes the current stats API using configured defaults.
-func (s *Service) Stats(ctx context.Context, service string) (StatusResult, error) {
+// Stats returns the requested service first and only configured services that have errors.
+func (s *Service) Stats(ctx context.Context, requestedService string) (StatsResponse, error) {
+	services := mergeServices(requestedService, s.config.Analyze.Services)
+
 	window, err := s.config.Analyze.Window()
 	if err != nil {
-		return StatusResult{}, err
+		return StatsResponse{}, err
 	}
 
 	to := time.Now().UTC()
+	from := to.Add(-window)
 
-	req := StatusRequest{
-		Service: service,
-		Condition: StatusCondition{
-			GTE: s.config.Analyze.DefaultCondition.GTE,
-			LT:  s.config.Analyze.DefaultCondition.LT,
-		},
-		TimeRange: TimeRange{
-			From: to.Add(-window),
-			To:   to,
-		},
+	results := make([]StatusResult, 0, len(services))
+
+	for i, service := range services {
+		result, err := s.Status(ctx, StatusRequest{
+			Service: service,
+			Condition: StatusCondition{
+				GTE: s.config.Analyze.DefaultCondition.GTE,
+				LT:  s.config.Analyze.DefaultCondition.LT,
+			},
+			TimeRange: TimeRange{
+				From: from,
+				To:   to,
+			},
+		})
+		if err != nil {
+			return StatsResponse{}, fmt.Errorf("analyze service %q: %w", service, err)
+		}
+
+		if i != 0 && result.Total == 0 {
+			continue
+		}
+
+		results = append(results, result)
 	}
 
-	return s.Status(ctx, req)
+	return StatsResponse{Services: results}, nil
 }
 
 // Status executes a fully dynamic status analysis request.
@@ -132,4 +154,33 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 	}
 
 	return result, nil
+}
+
+// mergeServices places the requested service first and appends configured services without duplicates.
+func mergeServices(requested string, configured []string) []string {
+	requested = strings.TrimSpace(requested)
+
+	services := make([]string, 0, len(configured)+1)
+	seen := make(map[string]struct{}, len(configured)+1)
+
+	if requested != "" {
+		services = append(services, requested)
+		seen[requested] = struct{}{}
+	}
+
+	for _, service := range configured {
+		service = strings.TrimSpace(service)
+		if service == "" {
+			continue
+		}
+
+		if _, exists := seen[service]; exists {
+			continue
+		}
+
+		seen[service] = struct{}{}
+		services = append(services, service)
+	}
+
+	return services
 }

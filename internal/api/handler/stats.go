@@ -12,7 +12,7 @@ import (
 
 // StatsService defines the behavior required by the stats HTTP handler.
 type StatsService interface {
-	Stats(ctx context.Context, service string) (analyze.StatusResult, error)
+	Stats(ctx context.Context, service string) (analyze.StatsResponse, error)
 }
 
 // Stats handles stats API requests.
@@ -25,7 +25,7 @@ func NewStats(service StatsService) *Stats {
 	return &Stats{service: service}
 }
 
-// Get returns status statistics for the requested service.
+// Get returns statistics for the requested service and configured services.
 func (h *Stats) Get(c *gin.Context) {
 	service := strings.TrimSpace(c.Query("service"))
 

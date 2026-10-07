@@ -15,12 +15,13 @@ type Config struct {
 	Analyze       AnalyzeConfig       `yaml:"analyze"`
 }
 
-// AnalyzeConfig contains analysis defaults and policies.
+// AnalyzeConfig contains analysis defaults, policies, and runtime services.
 type AnalyzeConfig struct {
 	StatsIndex          string          `yaml:"stats_index"`
 	DefaultWindow       string          `yaml:"default_window"`
 	DefaultCondition    StatusCondition `yaml:"default_condition"`
 	ExcludedStatusCodes []int           `yaml:"excluded_status_codes"`
+	Services            []string        `yaml:"-"`
 }
 
 // StatusCondition defines the default HTTP status range.
@@ -48,7 +49,7 @@ type IndexSchema struct {
 	TimeField    string `yaml:"time_field"`
 }
 
-// Load reads and validates configuration from a YAML file.
+// Load reads YAML configuration, applies environment configuration, and validates the result.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -59,6 +60,8 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("config: decode %q: %w", path, err)
 	}
+
+	cfg.Analyze.Services = parseServices(os.Getenv("STATS_SERVICES"))
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -150,4 +153,27 @@ func (c AnalyzeConfig) Window() (time.Duration, error) {
 	}
 
 	return window, nil
+}
+
+// parseServices parses, trims, and deduplicates a comma-separated service list.
+func parseServices(value string) []string {
+	parts := strings.Split(value, ",")
+	services := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+
+	for _, part := range parts {
+		service := strings.TrimSpace(part)
+		if service == "" {
+			continue
+		}
+
+		if _, exists := seen[service]; exists {
+			continue
+		}
+
+		seen[service] = struct{}{}
+		services = append(services, service)
+	}
+
+	return services
 }
