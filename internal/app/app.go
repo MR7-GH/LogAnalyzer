@@ -11,6 +11,8 @@ import (
 	"LogAnalyzer/internal/api/routes"
 	"LogAnalyzer/internal/config"
 	"LogAnalyzer/internal/elastic"
+	"LogAnalyzer/internal/notify/telegram"
+	"LogAnalyzer/internal/report"
 )
 
 // Run initializes and starts the LogAnalyzer application.
@@ -25,7 +27,7 @@ func Run() error {
 		return fmt.Errorf("app: ELASTIC_URL is required")
 	}
 
-	client, err := elastic.NewClient(elastic.Config{
+	elasticClient, err := elastic.NewClient(elastic.Config{
 		Addresses: []string{elasticURL},
 		Username:  strings.TrimSpace(os.Getenv("ELASTIC_USERNAME")),
 		Password:  strings.TrimSpace(os.Getenv("ELASTIC_PASSWORD")),
@@ -35,12 +37,22 @@ func Run() error {
 		return err
 	}
 
-	analyzeService, err := analyze.NewService(client, cfg, cfg.Analyze.StatsIndex)
+	analyzeService, err := analyze.NewService(elasticClient, cfg, cfg.Analyze.StatsIndex)
 	if err != nil {
 		return err
 	}
 
-	statsHandler := handler.NewStats(analyzeService)
+	telegramClient, err := telegram.NewClientFromEnv(10 * time.Second)
+	if err != nil {
+		return err
+	}
+
+	reportService, err := report.NewService(analyzeService, telegramClient, 60*time.Second)
+	if err != nil {
+		return err
+	}
+
+	statsHandler := handler.NewStats(reportService)
 	router := routes.New(statsHandler)
 
 	address := envOrDefault("HTTP_ADDRESS", ":8080")
