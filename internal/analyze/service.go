@@ -113,7 +113,6 @@ func (s *Service) Stats(ctx context.Context, requestedService string, options St
 			return StatsResponse{}, fmt.Errorf("analyze service %q: %w", service, err)
 		}
 
-		// The requested service is always returned, even when it has no errors.
 		if i != 0 && result.Total == 0 {
 			continue
 		}
@@ -124,10 +123,20 @@ func (s *Service) Stats(ctx context.Context, requestedService string, options St
 				return StatsResponse{}, fmt.Errorf("correlate service %q: %w", service, err)
 			}
 
+			byStatus := make(map[int]StatusCorrelationSummary, len(correlation.ByStatus))
+
+			for status, statusResult := range correlation.ByStatus {
+				byStatus[status] = StatusCorrelationSummary{
+					Matched:   statusResult.Matched,
+					Unmatched: statusResult.Unmatched,
+				}
+			}
+
 			result.Correlation = CorrelationSummary{
 				Total:     correlation.Correlatable,
 				Matched:   correlation.Matched,
 				Unmatched: correlation.Unmatched,
+				ByStatus:  byStatus,
 			}
 
 			if options.Detailed {
@@ -182,9 +191,7 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 		Total:   parsed.Hits.Total.Value,
 		Codes:   make(map[int]int64, len(parsed.Aggregations.StatusCodes.Buckets)),
 		Correlation: CorrelationSummary{
-			Total:     0,
-			Matched:   0,
-			Unmatched: 0,
+			ByStatus: make(map[int]StatusCorrelationSummary),
 		},
 	}
 

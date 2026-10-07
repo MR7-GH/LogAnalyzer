@@ -8,14 +8,21 @@ import (
 	"strings"
 )
 
-// CorrelationSummary contains lightweight correlation statistics returned in normal API responses.
+// CorrelationSummary contains lightweight overall correlation statistics.
 type CorrelationSummary struct {
-	Total     int `json:"total"`
+	Total     int                              `json:"total"`
+	Matched   int                              `json:"matched"`
+	Unmatched int                              `json:"unmatched"`
+	ByStatus  map[int]StatusCorrelationSummary `json:"by_status"`
+}
+
+// StatusCorrelationSummary contains lightweight correlation statistics for one status code.
+type StatusCorrelationSummary struct {
 	Matched   int `json:"matched"`
 	Unmatched int `json:"unmatched"`
 }
 
-// CorrelationDetail contains detailed correlation statistics returned when detail mode is enabled.
+// CorrelationDetail contains detailed correlation statistics.
 type CorrelationDetail struct {
 	Documents        int                              `json:"documents"`
 	Correlatable     int                              `json:"correlatable"`

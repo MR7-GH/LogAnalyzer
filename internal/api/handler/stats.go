@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,24 +12,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// StatsService defines the behavior required by the stats HTTP handler.
-type StatsService interface {
-	Stats(ctx context.Context, service string, options analyze.StatsOptions) (analyze.StatsResponse, error)
+// StatsProcessor defines asynchronous and synchronous stats processing behavior.
+type StatsProcessor interface {
+	Submit(service string, options analyze.StatsOptions) error
+	Process(ctx context.Context, service string, options analyze.StatsOptions) (analyze.StatsResponse, error)
 }
 
 // Stats handles stats API requests.
 type Stats struct {
-	service StatsService
+	processor StatsProcessor
 }
 
 // NewStats creates a new stats handler.
-func NewStats(service StatsService) *Stats {
+func NewStats(processor StatsProcessor) *Stats {
 	return &Stats{
-		service: service,
+		processor: processor,
 	}
 }
 
-// Get returns statistics for the requested service and configured services.
+// Get processes a stats request asynchronously or synchronously based on return_result.
 func (h *Stats) Get(c *gin.Context) {
 	service := strings.TrimSpace(c.Query("service"))
 	if service == "" {
@@ -38,7 +40,7 @@ func (h *Stats) Get(c *gin.Context) {
 		return
 	}
 
-	detailed, err := parseDetailOption(c.Query("detail"))
+	detailed, err := parseBoolOption(c.Query("detail"), "detail")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
@@ -46,38 +48,55 @@ func (h *Stats) Get(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.Stats(c.Request.Context(), service, analyze.StatsOptions{
-		Detailed: detailed,
-	})
+	returnResult, err := parseBoolOption(c.Query("return_result"), "return_result")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		c.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
 		})
 		return
 	}
 
-	c.JSON(http.StatusOK, result)
+	options := analyze.StatsOptions{
+		Detailed: detailed,
+	}
+
+	if returnResult {
+		result, err := h.processor.Process(c.Request.Context(), service, options)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	if err := h.processor.Submit(service, options); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"status": "accepted",
+	})
 }
 
-// parseDetailOption parses the optional detail query parameter.
-func parseDetailOption(value string) (bool, error) {
+// parseBoolOption parses an optional boolean query parameter.
+func parseBoolOption(value, name string) (bool, error) {
 	value = strings.TrimSpace(value)
+
 	if value == "" {
 		return false, nil
 	}
 
-	detailed, err := strconv.ParseBool(value)
+	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		return false, &invalidDetailError{}
+		return false, fmt.Errorf("%s must be true or false", name)
 	}
 
-	return detailed, nil
-}
-
-// invalidDetailError represents an invalid detail query parameter.
-type invalidDetailError struct{}
-
-// Error returns the detail parameter validation message.
-func (e *invalidDetailError) Error() string {
-	return "detail must be true or false"
+	return parsed, nil
 }
