@@ -15,7 +15,7 @@ import (
 
 // Run initializes and starts the LogAnalyzer application.
 func Run() error {
-	cfg, err := config.Load(envOrDefault("CONFIG_PATH", "configs/config.yaml"))
+	cfg, err := config.Load("configs/config.yaml")
 	if err != nil {
 		return err
 	}

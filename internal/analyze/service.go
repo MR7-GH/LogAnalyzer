@@ -18,21 +18,28 @@ type Service struct {
 	indexName string
 }
 
-// StatsResponse contains ordered statistics for the requested service and configured services with errors.
+// StatsOptions defines optional behavior for a stats request.
+type StatsOptions struct {
+	Detailed bool
+}
+
+// StatsResponse contains ordered statistics for analyzed services.
 type StatsResponse struct {
 	Services []StatusResult `json:"services"`
 }
 
-// StatusResult contains HTTP status statistics for one service and time window.
+// StatusResult contains HTTP status statistics and correlation information for one service.
 type StatusResult struct {
-	Service  string        `json:"service"`
-	Index    string        `json:"index"`
-	From     time.Time     `json:"from"`
-	To       time.Time     `json:"to"`
-	Total    int64         `json:"total"`
-	Codes    map[int]int64 `json:"codes"`
-	Total4xx int64         `json:"total_4xx"`
-	Total5xx int64         `json:"total_5xx"`
+	Service           string             `json:"service"`
+	Index             string             `json:"index"`
+	From              time.Time          `json:"from"`
+	To                time.Time          `json:"to"`
+	Total             int64              `json:"total"`
+	Codes             map[int]int64      `json:"codes"`
+	Total4xx          int64              `json:"total_4xx"`
+	Total5xx          int64              `json:"total_5xx"`
+	Correlation       CorrelationSummary `json:"correlation"`
+	CorrelationDetail *CorrelationDetail `json:"correlation_detail,omitempty"`
 }
 
 // statusResponse contains the Elasticsearch fields required by status analysis.
@@ -67,11 +74,15 @@ func NewService(client *elastic.Client, cfg *config.Config, indexName string) (*
 		return nil, fmt.Errorf("analyze: index %q is not configured", indexName)
 	}
 
-	return &Service{client: client, config: cfg, indexName: indexName}, nil
+	return &Service{
+		client:    client,
+		config:    cfg,
+		indexName: indexName,
+	}, nil
 }
 
-// Stats returns the requested service first and only configured services that have errors.
-func (s *Service) Stats(ctx context.Context, requestedService string) (StatsResponse, error) {
+// Stats returns the requested service first and configured services that contain errors.
+func (s *Service) Stats(ctx context.Context, requestedService string, options StatsOptions) (StatsResponse, error) {
 	services := mergeServices(requestedService, s.config.Analyze.Services)
 
 	window, err := s.config.Analyze.Window()
@@ -85,7 +96,7 @@ func (s *Service) Stats(ctx context.Context, requestedService string) (StatsResp
 	results := make([]StatusResult, 0, len(services))
 
 	for i, service := range services {
-		result, err := s.Status(ctx, StatusRequest{
+		req := StatusRequest{
 			Service: service,
 			Condition: StatusCondition{
 				GTE: s.config.Analyze.DefaultCondition.GTE,
@@ -95,19 +106,50 @@ func (s *Service) Stats(ctx context.Context, requestedService string) (StatsResp
 				From: from,
 				To:   to,
 			},
-		})
+		}
+
+		result, err := s.Status(ctx, req)
 		if err != nil {
 			return StatsResponse{}, fmt.Errorf("analyze service %q: %w", service, err)
 		}
 
+		// The requested service is always returned, even when it has no errors.
 		if i != 0 && result.Total == 0 {
 			continue
+		}
+
+		if result.Total > 0 && s.config.Analyze.Correlation.Enabled {
+			correlation, err := s.Correlate(ctx, req)
+			if err != nil {
+				return StatsResponse{}, fmt.Errorf("correlate service %q: %w", service, err)
+			}
+
+			result.Correlation = CorrelationSummary{
+				Total:     correlation.Correlatable,
+				Matched:   correlation.Matched,
+				Unmatched: correlation.Unmatched,
+			}
+
+			if options.Detailed {
+				result.CorrelationDetail = &CorrelationDetail{
+					Documents:        correlation.Documents,
+					Correlatable:     correlation.Correlatable,
+					Matched:          correlation.Matched,
+					Unmatched:        correlation.Unmatched,
+					MissingRequestID: correlation.MissingRequestID,
+					MatchedPercent:   correlation.MatchedPercent,
+					UnmatchedPercent: correlation.UnmatchedPercent,
+					ByStatus:         correlation.ByStatus,
+				}
+			}
 		}
 
 		results = append(results, result)
 	}
 
-	return StatsResponse{Services: results}, nil
+	return StatsResponse{
+		Services: results,
+	}, nil
 }
 
 // Status executes a fully dynamic status analysis request.
@@ -139,6 +181,11 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 		To:      req.TimeRange.To,
 		Total:   parsed.Hits.Total.Value,
 		Codes:   make(map[int]int64, len(parsed.Aggregations.StatusCodes.Buckets)),
+		Correlation: CorrelationSummary{
+			Total:     0,
+			Matched:   0,
+			Unmatched: 0,
+		},
 	}
 
 	for _, bucket := range parsed.Aggregations.StatusCodes.Buckets {

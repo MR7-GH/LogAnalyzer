@@ -16,8 +16,7 @@ elasticsearch:
 
 analyze:
   stats_index: "arvan-cdn"
-
-  default_window: "5m"
+  default_window: "15m"
 
   default_condition:
     gte: 499
@@ -25,3 +24,15 @@ analyze:
 
   excluded_status_codes:
     - 583
+
+  correlation:
+      enabled: true
+
+      primary_index: "arvan-cdn"
+      secondary_index: "prod-nginx"
+
+      primary_field: "request_id"
+      secondary_field: "arvan_request_id"
+
+      max_documents: 10000
+      batch_size: 1000
